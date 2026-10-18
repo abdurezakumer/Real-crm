@@ -513,11 +513,28 @@ def _claim_daily_backup() -> dict[str, Any] | None:
             """update crm_backup_state set lease_until=now()+interval '10 minutes',
                  retry_after=null,updated_at=now()
                where id=true and (lease_until is null or lease_until<=now())
-                 and ((notification_pending and (retry_after is null or retry_after<=now()))
+                 and (customer_backup_pending
+                   or (notification_pending and (retry_after is null or retry_after<=now()))
                    or (not notification_pending and
                        (last_success_at is null or last_success_at<=now()-interval '24 hours')))
                returning *"""
         ).fetchone()
+
+
+def _mark_daily_customer_backup_pending(storage_path: str, summary: dict[str, Any]) -> None:
+    with connection() as conn:
+        conn.execute(
+            """update crm_backup_state set last_storage_path=%s,last_file_size_bytes=%s,
+                 last_table_count=%s,last_row_count=%s,customer_backup_pending=true,
+                 notification_pending=false,retry_after=null,lease_until=null,
+                 last_error=null,updated_at=now() where id=true""",
+            (
+                storage_path,
+                summary["file_size_bytes"],
+                summary["table_count"],
+                summary["row_count"],
+            ),
+        )
 
 
 def _mark_daily_backup_ready(
@@ -532,7 +549,7 @@ def _mark_daily_backup_ready(
                  last_file_size_bytes=%s,last_table_count=%s,last_row_count=%s,
                  last_customer_storage_path=%s,last_customer_file_size_bytes=%s,
                  last_customer_count=%s,last_customer_related_row_count=%s,
-                 last_customer_relation_count=%s,
+                 last_customer_relation_count=%s,customer_backup_pending=false,
                  notification_pending=true,retry_after=now(),last_error=null,
                  lease_until=now()+interval '10 minutes',updated_at=now()
                where id=true""",
@@ -569,41 +586,23 @@ def _defer_daily_backup_retry(error_type: str) -> None:
         )
 
 
-async def _send_daily_backup(
-    bot,
-    settings: Settings,
-    path: Path,
-    storage_path: str,
-    caption: str,
+async def _send_daily_backup_links(
+    bot, settings: Settings, database_storage_path: str, customer_storage_path: str
 ) -> None:
     timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
-    filename = path.name
+    database_url = await backup_download_url(settings, database_storage_path)
+    customer_url = await backup_download_url(settings, customer_storage_path)
     recipients = getattr(settings, "authorized_telegram_user_ids", None)
     if recipients is None:
         recipients = [settings.authorized_telegram_user_id]
-    url = None
     for recipient_id in recipients:
-        if path.stat().st_size <= 45 * 1024 * 1024:
-            try:
-                await bot.send_document(
-                    chat_id=recipient_id,
-                    document=path,
-                    filename=filename,
-                    caption=f"{caption} - {timestamp}",
-                )
-                continue
-            except Exception as exc:
-                logger.info(
-                    "Backup document delivery failed; trying a private link (%s)",
-                    type(exc).__name__,
-                )
-
-        if url is None:
-            url = await backup_download_url(settings, storage_path)
         await bot.send_message(
             chat_id=recipient_id,
             text=(
-                f"{caption} - {timestamp}\nDownload from this private link within 7 days:\n{url}"
+                f"Your daily CRM Excel backups are ready - {timestamp}. "
+                "These private links expire in 7 days:\n"
+                f"Full CRM database: {database_url}\n"
+                f"Customer profiles and linked history: {customer_url}"
             ),
             disable_web_page_preview=True,
         )
@@ -624,61 +623,56 @@ async def _process_daily_backup(bot, settings: Settings) -> bool:
             and job["last_storage_path"]
             and job["last_customer_storage_path"]
         ):
-            database_url = await backup_download_url(settings, job["last_storage_path"])
-            customer_url = await backup_download_url(settings, job["last_customer_storage_path"])
-            recipients = getattr(settings, "authorized_telegram_user_ids", None)
-            if recipients is None:
-                recipients = [settings.authorized_telegram_user_id]
-            for recipient_id in recipients:
-                await bot.send_message(
-                    chat_id=recipient_id,
-                    text=(
-                        "Your daily CRM backups are ready. These private links expire in 7 days:\n"
-                        f"Full CRM database: {database_url}\n"
-                        f"Customer profiles and linked history: {customer_url}"
-                    ),
-                    disable_web_page_preview=True,
-                )
+            await _send_daily_backup_links(
+                bot, settings, job["last_storage_path"], job["last_customer_storage_path"]
+            )
             _mark_daily_backup_notified()
             return True
 
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        filename = f"real_estate_crm_backup_{timestamp}.xlsx"
-        customer_filename = f"real_estate_customer_profiles_{timestamp}.xlsx"
         with tempfile.TemporaryDirectory(prefix="crm-daily-backup-") as directory:
+            if job["customer_backup_pending"] and job["last_storage_path"]:
+                customer_filename = f"real_estate_customer_profiles_{timestamp}.xlsx"
+                customer_path = Path(directory) / customer_filename
+                customer_summary = await asyncio.to_thread(
+                    build_customer_profiles_backup, customer_path
+                )
+                customer_storage_path = await upload_backup(
+                    settings, customer_filename, customer_path
+                )
+                summary = {
+                    "file_size_bytes": job["last_file_size_bytes"],
+                    "table_count": job["last_table_count"],
+                    "row_count": job["last_row_count"],
+                }
+                _mark_daily_backup_ready(
+                    job["last_storage_path"], summary, customer_storage_path, customer_summary
+                )
+                await _send_daily_backup_links(
+                    bot, settings, job["last_storage_path"], customer_storage_path
+                )
+                _mark_daily_backup_notified()
+                logger.info(
+                    "Daily customer profile backup completed (%s customers, %s linked rows, %s bytes)",
+                    customer_summary["contact_count"],
+                    customer_summary["related_row_count"],
+                    customer_summary["file_size_bytes"],
+                )
+                return True
+
+            filename = f"real_estate_crm_backup_{timestamp}.xlsx"
             path = Path(directory) / filename
             summary = await asyncio.to_thread(build_database_backup, path)
             storage_path = await upload_backup(settings, filename, path)
-
-            customer_path = Path(directory) / customer_filename
-            customer_summary = await asyncio.to_thread(
-                build_customer_profiles_backup, customer_path
+            _mark_daily_customer_backup_pending(storage_path, summary)
+            logger.info(
+                "Daily full CRM backup saved (%s tables, %s rows, %s bytes); "
+                "customer workbook queued for the next worker run",
+                summary["table_count"],
+                summary["row_count"],
+                summary["file_size_bytes"],
             )
-            customer_storage_path = await upload_backup(settings, customer_filename, customer_path)
-            _mark_daily_backup_ready(storage_path, summary, customer_storage_path, customer_summary)
-            await _send_daily_backup(
-                bot, settings, path, storage_path, "Daily full CRM Excel backup"
-            )
-            await _send_daily_backup(
-                bot,
-                settings,
-                customer_path,
-                customer_storage_path,
-                "Daily customer profiles and linked history Excel backup",
-            )
-
-        _mark_daily_backup_notified()
-        logger.info(
-            "Daily Excel backups completed (%s tables, %s rows, %s bytes; "
-            "%s customers, %s linked rows, %s bytes)",
-            summary["table_count"],
-            summary["row_count"],
-            summary["file_size_bytes"],
-            customer_summary["contact_count"],
-            customer_summary["related_row_count"],
-            customer_summary["file_size_bytes"],
-        )
-        return True
+            return True
     except Exception as exc:
         error_type = type(exc).__name__
         try:
