@@ -90,7 +90,7 @@ def _audit(
 def ensure_bootstrap_admin(
     conn: Connection, user_id: int, display_name: str = ""
 ) -> dict[str, Any]:
-    """Create the configured owner once; never promote an existing account here."""
+    """Create a configured bootstrap administrator once; never promote an existing account here."""
     return conn.execute(
         """insert into crm_users(telegram_user_id,display_name,role,account_status,can_receive_leads)
            values (%s,%s,'SUPER_ADMIN','ACTIVE',false)
@@ -115,7 +115,7 @@ def bootstrap_legacy_ownership(conn: Connection, user_id: int, limit: int = 500)
              from batch b where c.id=b.id returning c.id
            ) insert into lead_assignment_history(contact_id,new_owner_telegram_user_id,
                actor_telegram_user_id,assignment_source,reason,idempotency_key)
-             select id,%s,%s,'BOOTSTRAP','Existing contact assigned to the configured owner',
+             select id,%s,%s,'BOOTSTRAP','Existing contact assigned to the primary configured owner',
                'bootstrap:'||id::text from assigned on conflict(idempotency_key) do nothing
              returning contact_id""",
         (max(1, min(limit, 500)), user_id, user_id, user_id),

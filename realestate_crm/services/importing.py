@@ -13,9 +13,43 @@ from psycopg import Connection
 from realestate_crm.phone import normalize_phone
 
 ALIASES = {
-    "source_row_number": {"no", "number", "id", "serial", "sno", "srno"},
-    "name": {"name", "fullname", "contactname", "customername"},
-    "phone": {"phone", "phonenumber", "mobile", "mobilenumber", "telephone", "tel"},
+    "source_row_number": {
+        "no",
+        "number",
+        "id",
+        "serial",
+        "serialno",
+        "sno",
+        "srno",
+        "index",
+        "row",
+    },
+    "name": {
+        "name",
+        "fullname",
+        "contactname",
+        "customername",
+        "clientname",
+        "leadname",
+        "contactperson",
+    },
+    "phone": {
+        "phone",
+        "phonenumber",
+        "phoneno",
+        "phonenum",
+        "mobile",
+        "mobilenumber",
+        "mobileno",
+        "cell",
+        "cellphone",
+        "telephone",
+        "tel",
+        "contactnumber",
+        "contactno",
+        "whatsapp",
+        "whatsappnumber",
+    },
 }
 
 
@@ -50,6 +84,17 @@ def detect_mapping(headers: list[str], selected: dict[str, int] | None = None) -
         matched = [i for i, header in enumerate(headers) if normalized_header(header) in aliases]
         if matched:
             found[key] = matched
+    if "phone" not in found:
+        ambiguous_number_columns = [
+            index
+            for index, header in enumerate(headers)
+            if normalized_header(header) in {"no", "number"}
+        ]
+        if ambiguous_number_columns:
+            # Some lead sheets label the phone column simply "No.". When a
+            # separate phone header exists, the same label stays a serial ID.
+            found.pop("source_row_number", None)
+            found["phone"] = ambiguous_number_columns
     if (
         "name" not in found
         or "phone" not in found
@@ -95,7 +140,8 @@ def preview_file(
     for _, row in islice(_rows(path, ext, 2), 20):
         name = str(row[mapping["name"]] if mapping["name"] < len(row) else "").strip()
         phone_raw = row[mapping["phone"]] if mapping["phone"] < len(row) else ""
-        phone = str(phone_raw or "").strip()
+        phone_text = str(phone_raw or "").strip()
+        phone = normalize_phone(phone_raw) or phone_text
         preview.append({"name": name[:100], "phone": phone[:50]})
     return ImportPreview(headers, mapping, preview)
 
@@ -161,7 +207,7 @@ def process_import_batch(
             continue
         local_seen.add(normalized)
         source_row = source_number or str(row_number)
-        accepted.append((row_number, name[:200], normalized, source_row[:50]))
+        accepted.append((row_number, name, normalized, source_row[:50]))
 
     phone_list = [item[2] for item in accepted]
     existing = set()

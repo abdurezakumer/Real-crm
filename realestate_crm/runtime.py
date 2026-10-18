@@ -331,16 +331,21 @@ async def process_webhook(
         actions: list[dict[str, Any]] = []
         with connection() as conn:
             display_name = update.effective_user.full_name if update.effective_user else ""
-            team_service.ensure_bootstrap_admin(
-                conn,
-                settings.authorized_telegram_user_id,
-                display_name if sender_id == settings.authorized_telegram_user_id else "",
-            )
-            if sender_id == settings.authorized_telegram_user_id:
+            admin_ids = getattr(settings, "authorized_telegram_user_ids", None)
+            if admin_ids is None:
+                admin_ids = [settings.authorized_telegram_user_id]
+            for admin_id in admin_ids:
+                team_service.ensure_bootstrap_admin(
+                    conn,
+                    admin_id,
+                    display_name if sender_id == admin_id else "",
+                )
+            if sender_id in admin_ids:
                 crm.ensure_user(conn, sender_id, settings)
-                team_service.bootstrap_legacy_ownership(conn, sender_id, limit=500)
+                if sender_id == admin_ids[0]:
+                    team_service.bootstrap_legacy_ownership(conn, sender_id, limit=500)
             token = _invitation_token(payload)
-            if sender_id != settings.authorized_telegram_user_id and not token:
+            if sender_id not in admin_ids and not token:
                 if not team_service.user_is_active(conn, sender_id):
                     return 200, {"ok": True}
             elif token is None and not team_service.user_is_active(conn, sender_id):

@@ -16,7 +16,8 @@ def readiness_status() -> tuple[int, dict[str, Any]]:
             result = conn.execute(
                 """select bool_and(to_regclass('public.' || required_table) is not null) ready
                    from unnest(array['processed_telegram_updates','telegram_outbox','crm_users',
-                     'contacts','follow_ups','campaigns','sales_opportunities']) required_table"""
+                     'contacts','follow_ups','campaigns','sales_opportunities',
+                     'crm_backup_state']) required_table"""
             ).fetchone()
             if not result or result["ready"] != 1:
                 raise RuntimeError("database readiness query returned no result")

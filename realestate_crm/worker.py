@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import tempfile
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -16,9 +17,16 @@ from telegram.error import TelegramError
 from realestate_crm.config import Settings
 from realestate_crm.database import connection
 from realestate_crm.services.ai import AIError, generate_ai_result
+from realestate_crm.services.backups import build_database_backup
 from realestate_crm.services.importing import ColumnMappingError, preview_file, process_import_batch
 from realestate_crm.services.notifications import send_phase3_notifications
-from realestate_crm.services.storage import delete_import, download_import, upload_import
+from realestate_crm.services.storage import (
+    backup_download_url,
+    delete_import,
+    download_import,
+    upload_backup,
+    upload_import,
+)
 from realestate_crm.telegram_ui import button, render_preview
 from realestate_crm.timeutils import local_label
 
@@ -491,6 +499,146 @@ async def _process_export(bot, settings: Settings) -> bool:
     return True
 
 
+def _claim_daily_backup() -> dict[str, Any] | None:
+    with connection() as conn:
+        return conn.execute(
+            """update crm_backup_state set lease_until=now()+interval '10 minutes',
+                 retry_after=null,updated_at=now()
+               where id=true and (lease_until is null or lease_until<=now())
+                 and ((notification_pending and (retry_after is null or retry_after<=now()))
+                   or (not notification_pending and
+                       (last_success_at is null or last_success_at<=now()-interval '24 hours')))
+               returning *"""
+        ).fetchone()
+
+
+def _mark_daily_backup_ready(storage_path: str, summary: dict[str, Any]) -> None:
+    with connection() as conn:
+        conn.execute(
+            """update crm_backup_state set last_success_at=now(),last_storage_path=%s,
+                 last_file_size_bytes=%s,last_table_count=%s,last_row_count=%s,
+                 notification_pending=true,retry_after=now(),last_error=null,
+                 lease_until=now()+interval '10 minutes',updated_at=now()
+               where id=true""",
+            (
+                storage_path,
+                summary["file_size_bytes"],
+                summary["table_count"],
+                summary["row_count"],
+            ),
+        )
+
+
+def _mark_daily_backup_notified() -> None:
+    with connection() as conn:
+        conn.execute(
+            """update crm_backup_state set last_notified_at=now(),notification_pending=false,
+                 retry_after=null,lease_until=null,last_error=null,updated_at=now()
+               where id=true"""
+        )
+
+
+def _defer_daily_backup_retry(error_type: str) -> None:
+    with connection() as conn:
+        conn.execute(
+            """update crm_backup_state set last_error=%s,
+                 retry_after=now()+interval '1 hour',lease_until=now()+interval '1 hour',
+                 updated_at=now() where id=true""",
+            (error_type[:100],),
+        )
+
+
+async def _send_daily_backup(bot, settings: Settings, path: Path, storage_path: str) -> None:
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    filename = path.name
+    recipients = getattr(settings, "authorized_telegram_user_ids", None)
+    if recipients is None:
+        recipients = [settings.authorized_telegram_user_id]
+    url = None
+    for recipient_id in recipients:
+        if path.stat().st_size <= 45 * 1024 * 1024:
+            try:
+                await bot.send_document(
+                    chat_id=recipient_id,
+                    document=path,
+                    filename=filename,
+                    caption=f"Daily full CRM Excel backup · {timestamp}",
+                )
+                continue
+            except Exception as exc:
+                logger.info(
+                    "Backup document delivery failed; trying a private link (%s)",
+                    type(exc).__name__,
+                )
+
+        if url is None:
+            url = await backup_download_url(settings, storage_path)
+        await bot.send_message(
+            chat_id=recipient_id,
+            text=(
+                f"Daily full CRM Excel backup · {timestamp}\n"
+                "Download from this private link within 7 days:\n"
+                f"{url}"
+            ),
+            disable_web_page_preview=True,
+        )
+
+
+async def _process_daily_backup(bot, settings: Settings) -> bool:
+    try:
+        job = _claim_daily_backup()
+    except Exception as exc:
+        logger.error("Daily Excel backup claim failed (%s)", type(exc).__name__)
+        return False
+    if not job:
+        return False
+
+    path = None
+    try:
+        if job["notification_pending"] and job["last_storage_path"]:
+            url = await backup_download_url(settings, job["last_storage_path"])
+            recipients = getattr(settings, "authorized_telegram_user_ids", None)
+            if recipients is None:
+                recipients = [settings.authorized_telegram_user_id]
+            for recipient_id in recipients:
+                await bot.send_message(
+                    chat_id=recipient_id,
+                    text=(
+                        "Your daily full CRM Excel backup is ready.\n"
+                        "Download from this private link within 7 days:\n"
+                        f"{url}"
+                    ),
+                    disable_web_page_preview=True,
+                )
+            _mark_daily_backup_notified()
+            return True
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        filename = f"real_estate_crm_backup_{timestamp}.xlsx"
+        with tempfile.TemporaryDirectory(prefix="crm-daily-backup-") as directory:
+            path = Path(directory) / filename
+            summary = await asyncio.to_thread(build_database_backup, path)
+            storage_path = await upload_backup(settings, filename, path)
+            _mark_daily_backup_ready(storage_path, summary)
+            await _send_daily_backup(bot, settings, path, storage_path)
+        _mark_daily_backup_notified()
+        logger.info(
+            "Daily Excel backup completed (%s tables, %s rows, %s bytes)",
+            summary["table_count"],
+            summary["row_count"],
+            summary["file_size_bytes"],
+        )
+        return True
+    except Exception as exc:
+        error_type = type(exc).__name__
+        try:
+            _defer_daily_backup_retry(error_type)
+        except Exception as state_exc:
+            logger.error("Daily Excel backup retry state failed (%s)", type(state_exc).__name__)
+        logger.error("Daily Excel backup failed (%s)", error_type)
+        return False
+
+
 def _claim_ai_job() -> dict[str, Any] | None:
     with connection() as conn:
         job = conn.execute(
@@ -856,6 +1004,7 @@ async def run_worker(bot, settings: Settings) -> dict[str, Any]:
     except Exception as exc:
         logger.error("AI job worker failed (%s)", type(exc).__name__)
     cleaned = await _cleanup_import_objects(bot, settings)
+    daily_backup = await _process_daily_backup(bot, settings)
     return {
         "import_previews": prepared,
         "import_jobs": processed,
@@ -864,4 +1013,5 @@ async def run_worker(bot, settings: Settings) -> dict[str, Any]:
         "exports_processed": int(exported),
         "ai_jobs_processed": ai_processed,
         "import_objects_cleaned": cleaned,
+        "daily_excel_backup_processed": int(daily_backup),
     }

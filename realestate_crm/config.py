@@ -2,11 +2,12 @@ import ipaddress
 import logging
 import re
 from functools import lru_cache
+from typing import Annotated
 from urllib.parse import parse_qs, urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, SecretStr, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, SecretStr, field_validator, model_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
 
@@ -17,7 +18,14 @@ class Settings(BaseSettings):
     telegram_bot_token: SecretStr
     telegram_webhook_secret: SecretStr
     telegram_webhook_url: str
-    authorized_telegram_user_id: int = Field(ge=1)
+    authorized_telegram_user_ids: Annotated[list[int], NoDecode] = Field(
+        min_length=1,
+        validation_alias=AliasChoices(
+            "AUTHORIZED_TELEGRAM_USER_ID",
+            "authorized_telegram_user_ids",
+            "authorized_telegram_user_id",
+        ),
+    )
     supabase_url: str
     supabase_service_role_key: SecretStr
     supabase_database_url: SecretStr
@@ -58,6 +66,31 @@ class Settings(BaseSettings):
     queue_priority_order: str = (
         "overdue_high,due_followup,high_qualified,qualified,interested,new,retry"
     )
+
+    @field_validator("authorized_telegram_user_ids", mode="before")
+    @classmethod
+    def parse_authorized_telegram_user_ids(cls, value: object) -> list[int]:
+        if isinstance(value, str):
+            parts = value.split(",")
+        elif isinstance(value, (list, tuple, set)):
+            parts = list(value)
+        else:
+            parts = [value]
+
+        if not parts or any(not str(part).strip() for part in parts):
+            raise ValueError("AUTHORIZED_TELEGRAM_USER_ID must contain one or more numeric IDs")
+        try:
+            user_ids = [int(str(part).strip()) for part in parts]
+        except (TypeError, ValueError) as exc:
+            raise ValueError("AUTHORIZED_TELEGRAM_USER_ID must contain numeric IDs") from exc
+        if any(user_id < 1 for user_id in user_ids):
+            raise ValueError("AUTHORIZED_TELEGRAM_USER_ID values must be positive")
+        return list(dict.fromkeys(user_ids))
+
+    @property
+    def authorized_telegram_user_id(self) -> int:
+        """Return the first configured administrator for legacy callers."""
+        return self.authorized_telegram_user_ids[0]
 
     @model_validator(mode="after")
     def validate_ai_settings(self):
