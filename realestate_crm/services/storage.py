@@ -27,7 +27,9 @@ def _headers(settings: Settings) -> dict[str, str]:
     return {"apikey": key, "authorization": f"Bearer {key}"}
 
 
-async def upload_import(settings: Settings, job_id: str, path: Path) -> str:
+async def upload_import(
+    settings: Settings, job_id: str, path: Path, *, upsert: bool = False
+) -> str:
     headers = _headers(settings)
     storage_path = f"{job_id}/{path.name}"
     base = settings.supabase_url.rstrip("/")
@@ -57,7 +59,7 @@ async def upload_import(settings: Settings, job_id: str, path: Path) -> str:
                 headers={
                     **headers,
                     "content-type": "application/octet-stream",
-                    "x-upsert": "false",
+                    "x-upsert": "true" if upsert else "false",
                 },
                 content=stream_file(),
             )

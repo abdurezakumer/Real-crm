@@ -1,4 +1,5 @@
 import csv
+import hashlib
 import hmac
 import html
 import json
@@ -24,7 +25,7 @@ from realestate_crm.services import crm
 from realestate_crm.services import outbox as telegram_outbox
 from realestate_crm.services import team as team_service
 from realestate_crm.services.importing import preview_file
-from realestate_crm.services.storage import download_import
+from realestate_crm.services.storage import download_import, upload_import
 from realestate_crm.worker import run_worker
 
 logger = logging.getLogger(__name__)
@@ -200,6 +201,69 @@ async def _finish_preview(bot: Bot, action: dict[str, Any], settings: Settings) 
     )
 
 
+async def _stage_text_import(bot: Bot, action: dict[str, Any], settings: Settings) -> None:
+    from realestate_crm.phone import normalize_phone
+    from realestate_crm.telegram_ui import render_preview
+
+    records = action["records"]
+    job_id = action["job_id"]
+    filename = "Pasted Telegram Leads.csv"
+    mapping = {"source_row_number": 0, "name": 1, "phone": 2}
+    with tempfile.TemporaryDirectory(prefix="crm-text-import-") as directory:
+        path = Path(directory) / "pasted-leads.csv"
+        with path.open("w", encoding="utf-8-sig", newline="") as output:
+            writer = csv.writer(output)
+            writer.writerow(["NO", "Name", "Phone"])
+            writer.writerows(
+                [
+                    row.get("source_row_number", ""),
+                    row.get("name", ""),
+                    row.get("phone", ""),
+                ]
+                for row in records
+            )
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        storage_path = await upload_import(settings, job_id, path, upsert=True)
+
+    preview = [
+        {
+            "name": (
+                f"NO {row['source_row_number']} | {row.get('name') or ''}"
+                if row.get("source_row_number")
+                else str(row.get("name") or "")
+            )[:100],
+            "phone": (normalize_phone(row.get("phone")) or str(row.get("phone") or ""))[:50],
+        }
+        for row in records[:20]
+    ]
+    with connection() as conn:
+        conn.execute(
+            """update import_jobs set status='PREVIEW',storage_path=%s,file_sha256=%s,
+                 header_mapping=%s,preview=%s,updated_at=now()
+               where id=%s and status='VALIDATING'""",
+            (
+                storage_path,
+                digest,
+                json.dumps(mapping),
+                json.dumps(
+                    {"headers": ["NO", "Name", "Phone"], "selected": mapping, "rows": preview}
+                ),
+                UUID(job_id),
+            ),
+        )
+    text, keyboard = render_preview(filename, preview, job_id)
+    recognized = f"Detected {len(records)} lead row(s)."
+    skipped = int(action.get("skipped_lines") or 0)
+    if skipped:
+        recognized += f" Skipped {skipped} line(s) without a detected lead."
+    await bot.send_message(
+        action["chat_id"],
+        f"{recognized}\n\n{text}",
+        parse_mode=ParseMode.HTML,
+        reply_markup=keyboard,
+    )
+
+
 async def _send_callback_answers(actions: list[dict[str, Any]], settings: Settings) -> None:
     answers = [action for action in actions if action.get("type") == "answer"]
     if not answers:
@@ -238,6 +302,8 @@ async def _deliver_outbox_action(bot: Bot, action: dict[str, Any], settings: Set
         )
     elif kind == "finish_preview":
         await _finish_preview(bot, action, settings)
+    elif kind == "stage_text_import":
+        await _stage_text_import(bot, action, settings)
     elif kind == "dialer":
         token = settings.telegram_bot_token.get_secret_value()
         message_html = (
@@ -280,11 +346,38 @@ async def _drain_telegram_outbox(settings: Settings, limit: int = 2) -> int:
                     try:
                         with connection() as conn:
                             telegram_outbox.mark_failed(conn, row, exc)
+                            if (
+                                action.get("type") == "stage_text_import"
+                                and int(row["attempts"]) >= 8
+                            ):
+                                conn.execute(
+                                    """update import_jobs set status='FAILED',
+                                         error_summary=%s,completed_at=now(),updated_at=now()
+                                       where id=%s and status='VALIDATING'""",
+                                    (
+                                        json.dumps(
+                                            [
+                                                {
+                                                    "reason": "Pasted leads could not be staged after retries"
+                                                }
+                                            ]
+                                        ),
+                                        UUID(action["job_id"]),
+                                    ),
+                                )
                     except Exception as store_exc:
                         logger.error(
                             "Telegram outbox failure state could not be saved (%s)",
                             type(store_exc).__name__,
                         )
+                    if action.get("type") == "stage_text_import" and int(row["attempts"]) >= 8:
+                        try:
+                            await bot.send_message(
+                                action["chat_id"],
+                                "I couldn’t stage the pasted leads after several attempts. Please paste them again later.",
+                            )
+                        except TelegramError:
+                            pass
                     continue
                 try:
                     with connection() as conn:

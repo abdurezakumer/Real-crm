@@ -36,6 +36,7 @@ realestate_crm/
     ai.py                    optional provider adapter and strict output validation
     ai_prompts.py            bounded AI operation prompts
     importing.py             column mapping and bounded import batches
+    text_import.py           pasted Telegram lead parsing and phone detection
     storage.py               private Supabase Storage operations
     backups.py               streaming multi-sheet Excel database snapshots
   worker.py                  imports, queued exports, reminders, retention cleanup
@@ -95,13 +96,14 @@ The webhook requires a public HTTPS URL for Telegram delivery. For local webhook
 8. Apply `supabase/migrations/202610180002_customer_profile_backup.sql` after the daily backup migration and before deploying this backup worker version. It tracks the separate customer profile workbook.
 9. Apply `supabase/migrations/202610180003_customer_backup_worker_stages.sql` after migration 002 and before deploying this backup worker version. It adds a durable stage marker so the two workbooks are generated in separate worker runs.
 10. Apply `supabase/migrations/202610180004_midnight_backup_schedule.sql` after migration 003 and before deploying this backup worker version. Daily backups are scheduled by the `APP_TIMEZONE` local date, at midnight.
-11. Apply `supabase/seed.sql` only if you want the empty development campaign.
-12. Copy the Shared Pooler transaction-mode URI from Supabase **Connect** into `SUPABASE_DATABASE_URL` for Vercel. Use the exact host, username, and port `6543` shown by Supabase, and require SSL. The application uses short-lived transactions and bounded queries.
-13. Copy the project URL and backend service-role key into `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The key is used only by the server to create, upload, download, and delete files in private Storage buckets. It is never included in Telegram messages or client-side code.
-14. Keep the database schema private. The migrations enable RLS on CRM tables and define no anon/authenticated policies. The backend’s server-side database credential bypasses RLS, so application authorization remains mandatory on every webhook and worker action.
-15. After deployment, follow the **Supabase Cron setup** below.
+11. Apply `supabase/migrations/202610180005_text_import_outbox_action.sql` after the outbox migration and before deploying code that stages pasted Telegram leads.
+12. Apply `supabase/seed.sql` only if you want the empty development campaign.
+13. Copy the Shared Pooler transaction-mode URI from Supabase **Connect** into `SUPABASE_DATABASE_URL` for Vercel. Use the exact host, username, and port `6543` shown by Supabase, and require SSL. The application uses short-lived transactions and bounded queries.
+14. Copy the project URL and backend service-role key into `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`. The key is used only by the server to create, upload, download, and delete files in private Storage buckets. It is never included in Telegram messages or client-side code.
+15. Keep the database schema private. The migrations enable RLS on CRM tables and define no anon/authenticated policies. The backend’s server-side database credential bypasses RLS, so application authorization remains mandatory on every webhook and worker action.
+16. After deployment, follow the **Supabase Cron setup** below.
 
-Apply migrations `001` through `005`, then all four daily-backup migrations, on a restored staging copy first. Verify that the expected tables and indexes exist, the backend can connect, and `/api/ready` returns `200` before switching production traffic. Deploy migration `005` before code that enqueues Telegram responses, and apply all four backup migrations before deploying this worker version. Release code and migrations in order. If a migration fails, stop the deployment and preserve the database for inspection instead of applying later migrations.
+Apply migrations `001` through `005`, the four daily-backup migrations, and the pasted-text outbox migration on a restored staging copy first. Verify that the expected schema exists, the backend can connect, and `/api/ready` returns `200` before switching traffic. Apply schema changes before deploying code that depends on them. Release code and migrations in order. If a migration fails, stop the deployment and preserve the database for inspection.
 
 Do not run `supabase/performance/seed_50000_contacts.sql` or `EXPLAIN ANALYZE` against production data. Those scripts are for a disposable test project only.
 
@@ -229,6 +231,7 @@ Reminder attempts are recorded and retried up to five times. Concurrent workers 
 ## Imports and calling workflow
 
 - Upload `.xlsx` or `.csv` in Telegram. The worker stages the upload and displays up to 20 sample rows.
+- Choose **Paste Leads** or send `/import`, then paste tab-separated/CSV rows or one lead per line. A `NO, Name, Phone` header preserves the source number. Ethiopian phone formats with spaces are detected, and a preview requires confirmation before saving.
 - Common headers such as `No.`, `Name`, `Phone No.`, `Mobile No.`, and `Phone Number` are detected. A lone `No.`/`Number` column is treated as phone when no explicit phone header exists; when a separate phone column exists, it remains the serial number. Spaces and punctuation in Ethiopian mobile numbers are handled; `+2519XXXXXXXX`, `09XXXXXXXX`, and `9XXXXXXXX` are normalized to E.164. If name or phone columns are missing or ambiguous, the bot asks the user to choose columns.
 - Choose one of three policies: add existing contacts to the new campaign, skip existing contacts, or update contact details while preserving call history.
 - The database’s partial unique index on normalized phone number protects against duplicate contacts across campaigns. Excel row numbers are never used as primary keys.

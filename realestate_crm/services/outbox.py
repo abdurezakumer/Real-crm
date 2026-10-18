@@ -7,7 +7,7 @@ from telegram import InlineKeyboardMarkup
 
 logger = logging.getLogger(__name__)
 
-SUPPORTED_ACTIONS = {"send", "edit", "finish_preview", "dialer"}
+SUPPORTED_ACTIONS = {"send", "edit", "finish_preview", "dialer", "stage_text_import"}
 MAX_ACTIONS_PER_UPDATE = 100
 
 

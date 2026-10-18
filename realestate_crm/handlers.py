@@ -21,6 +21,7 @@ from realestate_crm.models import PropertyInterestInput
 from realestate_crm.phone import tel_uri
 from realestate_crm.services import crm, intelligence
 from realestate_crm.services import team as team_service
+from realestate_crm.services.text_import import parse_pasted_leads
 from realestate_crm.telegram_ui import (
     button,
     campaign_keyboard,
@@ -520,11 +521,16 @@ def _handle_message(
             phase4_handlers.handle_invitation_start(conn, update, user_id, invite_match.group(1))
         )
         return actions
+    state = _get_input(conn, user_id)
+    import_command = text.split()[0].lower().split("@")[0] if text.startswith("/") else ""
+    is_text_import = bool(state and state.get("purpose") == "TEXT_IMPORT")
     try:
         team_service.authorize_message(
             conn,
             user_id,
-            is_import=bool(message.document),
+            is_import=bool(message.document)
+            or import_command in {"/import", "/textimport"}
+            or is_text_import,
             is_read_only_command=text.startswith(("/start", "/menu", "/help", "/team")),
         )
     except PermissionError as exc:
@@ -573,8 +579,49 @@ def _handle_message(
             _dashboard(conn, user_id, settings, actions, update)
         elif command == "/team":
             phase4_handlers.role_menu(conn, update, actions, user_id)
+        elif command in {"/import", "/textimport"}:
+            _set_input(conn, user_id, "TEXT_IMPORT")
+            actions.append(
+                _action_send(
+                    message.chat_id,
+                    "Paste lead rows in one message. Use tab-separated or CSV columns, or one lead per line. Include a header such as NO, Name, Phone when available. Ethiopian phones like +2519XXXXXXXX, 09XXXXXXXX, or 9XXXXXXXX are accepted, including spaces between digits. I’ll preview the matches before importing.",
+                )
+            )
+        elif command == "/cancel" and is_text_import:
+            _clear_input(conn, user_id)
+            actions.append(_action_send(message.chat_id, "Text import cancelled."))
         return actions
-    state = _get_input(conn, user_id)
+    if state and state.get("purpose") == "TEXT_IMPORT":
+        try:
+            records, skipped = parse_pasted_leads(text, settings.max_import_rows)
+        except ValueError as exc:
+            actions.append(_action_send(message.chat_id, str(exc)))
+            return actions
+        job_id = uuid4()
+        campaign_name = (
+            f"Pasted Leads {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S')} {job_id.hex[:6]}"
+        )
+        campaign = crm.create_campaign(
+            conn, campaign_name, "telegram-text-import", actor_id=user_id
+        )
+        conn.execute(
+            """insert into import_jobs
+                 (id,telegram_user_id,chat_id,original_filename,campaign_id,status)
+               values (%s,%s,%s,%s,%s,'VALIDATING')""",
+            (job_id, user_id, message.chat_id, "Pasted Telegram Leads.csv", campaign["id"]),
+        )
+        _clear_input(conn, user_id)
+        actions.append(
+            {
+                "type": "stage_text_import",
+                "job_id": str(job_id),
+                "chat_id": message.chat_id,
+                "filename": "pasted-telegram-leads.csv",
+                "records": records,
+                "skipped_lines": skipped,
+            }
+        )
+        return actions
     if not state:
         mode = "name_phone"
         _set_input(
@@ -1088,7 +1135,16 @@ def _handle_callback(
                 actions,
                 update,
                 f"Upload an .xlsx or .csv file (up to {settings.max_import_file_mb} MB). I’ll preview up to 20 rows before you confirm.",
-                main_menu(),
+                InlineKeyboardMarkup(
+                    [[button("Paste Leads", "m:textimport")], [button("Back", "m:home")]]
+                ),
+            )
+        elif data == "m:textimport":
+            _set_input(conn, user_id, "TEXT_IMPORT")
+            _edit_or_send(
+                actions,
+                update,
+                "Paste lead rows in one message. Use tab-separated or CSV columns, or one lead per line. Include a header such as NO, Name, Phone when available. Ethiopian phones like +2519XXXXXXXX, 09XXXXXXXX, or 9XXXXXXXX are accepted, including spaces between digits. I’ll preview the matches before importing. Send /cancel to stop.",
             )
         elif data == "m:search":
             _edit_or_send(actions, update, "Choose a search field.", search_keyboard())

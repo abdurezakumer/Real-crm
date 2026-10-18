@@ -138,7 +138,8 @@ def role_keyboard(conn: Connection, user_id: int) -> InlineKeyboardMarkup:
         rows = [
             [button("Start Calling", "m:start"), button("My Next Lead", "m:next")],
             [button("Follow-Ups", "m:followups"), button("Campaigns", "m:campaigns")],
-            [button("Import Excel", "m:import"), button("Export Data", "m:export")],
+            [button("Import Excel", "m:import"), button("Paste Leads", "m:textimport")],
+            [button("Export Data", "m:export")],
             [button("Team Management", "p4:menu")],
             [button("Calling Campaigns", "p4:campaigns")],
             [button("Sales Pipeline", "p3:home"), button("Command Center", "p3:command")],
@@ -160,6 +161,7 @@ def role_keyboard(conn: Connection, user_id: int) -> InlineKeyboardMarkup:
     elif role == "MARKETING_ADMIN":
         rows = [
             [button("Campaigns", "m:campaigns"), button("Import Leads", "m:import")],
+            [button("Paste Leads", "m:textimport")],
             [button("Campaign Workspace", "p4:menu")],
         ]
     else:

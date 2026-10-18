@@ -821,7 +821,7 @@ def authorize_callback(conn: Connection, actor_id: int, callback_data: str) -> N
             if operation not in readable:
                 raise PermissionError("Observer accounts are read-only.")
     elif prefix == "m":
-        if operation in {"import"}:
+        if operation in {"import", "textimport"}:
             require_permission(conn, actor_id, "imports.manage")
         if operation == "export":
             require_permission(conn, actor_id, "contacts.export_team")

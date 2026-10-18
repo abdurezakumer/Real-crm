@@ -2378,8 +2378,6 @@ def command_center_metrics(conn: Connection, now: datetime, timezone: str) -> di
             end,
             start,
             end,
-            start,
-            end,
         ),
     ).fetchone()
     previous_start, previous_end = local_day_bounds(now - timedelta(days=1), timezone)
