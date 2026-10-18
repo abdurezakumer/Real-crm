@@ -86,9 +86,7 @@ def build_database_backup(path: Path) -> dict[str, Any]:
             overflow_sheet = None
             overflow_rows_on_sheet = EXCEL_MAX_DATA_ROWS
 
-            with conn.cursor(
-                name=f"crm_backup_{table_number}", row_factory=tuple_row
-            ) as cursor:
+            with conn.cursor(name=f"crm_backup_{table_number}", row_factory=tuple_row) as cursor:
                 cursor.execute(
                     sql.SQL("select * from {}.{}").format(
                         sql.Identifier("public"), sql.Identifier(table_name)
@@ -113,9 +111,7 @@ def build_database_backup(path: Path) -> dict[str, Any]:
                         for column_name, value in zip(columns, row, strict=True):
                             cell = _cell_value(value)
                             if isinstance(cell, str) and len(cell) > EXCEL_MAX_CELL_CHARS:
-                                overflow_values.append(
-                                    (column_name, cell[EXCEL_MAX_CELL_CHARS:])
-                                )
+                                overflow_values.append((column_name, cell[EXCEL_MAX_CELL_CHARS:]))
                                 cell = cell[:EXCEL_MAX_CELL_CHARS]
                             output_row.append(cell)
                         data_sheet.append(output_row)
@@ -137,9 +133,7 @@ def build_database_backup(path: Path) -> dict[str, Any]:
                                             f"_{overflow_sheet_count}",
                                         )
                                     )
-                                    overflow_sheet.append(
-                                        ["Source row", "Column", "Part", "Text"]
-                                    )
+                                    overflow_sheet.append(["Source row", "Column", "Part", "Text"])
                                     overflow_rows_on_sheet = 0
                                 overflow_sheet.append(
                                     [
@@ -151,9 +145,7 @@ def build_database_backup(path: Path) -> dict[str, Any]:
                                 )
                                 overflow_rows_on_sheet += 1
 
-            manifest.append(
-                [table_name, row_count, data_sheet_count, overflow_sheet_count]
-            )
+            manifest.append([table_name, row_count, data_sheet_count, overflow_sheet_count])
             table_count += 1
 
     workbook.save(path)
