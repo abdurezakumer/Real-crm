@@ -33,6 +33,15 @@ class FakeImportConnection:
         self.last_insert_sql = None
         self.campaign_source = None
 
+    def cursor(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        return False
+
     def execute(self, sql, params=()):
         if sql.startswith("select normalized_phone from contacts"):
             return Cursor(
@@ -132,7 +141,7 @@ def test_xlsx_preview_recognizes_common_headers(tmp_path):
     path = make_xlsx(tmp_path / "leads.xlsx", [(1, "Alem", "0911234567")])
     preview = preview_file(path, "leads.xlsx")
     assert preview.mapping == {"source_row_number": 0, "name": 1, "phone": 2}
-    assert preview.rows == [{"name": "Alem", "phone": "0911234567"}]
+    assert preview.rows == [{"name": "Alem", "phone": "+251911234567"}]
 
 
 def test_csv_preview_and_missing_columns(tmp_path):

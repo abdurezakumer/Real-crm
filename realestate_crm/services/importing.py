@@ -248,21 +248,22 @@ def process_import_batch(
             statement = """insert into contacts (name, phone_number, normalized_phone, source_row_number,
                   assigned_telegram_user_id,assigned_at,assignment_source,import_batch_id,lead_source)
                 values (%s,%s,%s,%s,%s,now(),'IMPORT',%s,%s) on conflict (normalized_phone) where normalized_phone is not null do nothing"""
-        conn.executemany(
-            statement,
-            [
-                (
-                    name,
-                    phone,
-                    phone,
-                    int(source_row) if source_row.isdigit() else row_number,
-                    job.get("telegram_user_id"),
-                    job["id"],
-                    lead_source,
-                )
-                for row_number, name, phone, source_row in accepted_to_write
-            ],
-        )
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                statement,
+                [
+                    (
+                        name,
+                        phone,
+                        phone,
+                        int(source_row) if source_row.isdigit() else row_number,
+                        job.get("telegram_user_id"),
+                        job["id"],
+                        lead_source,
+                    )
+                    for row_number, name, phone, source_row in accepted_to_write
+                ],
+            )
     if accepted:
         ids = conn.execute(
             "select id, normalized_phone from contacts where normalized_phone = any(%s)",
@@ -285,10 +286,11 @@ def process_import_batch(
                 (job["telegram_user_id"], selected_ids, job["telegram_user_id"]),
             )
         if job["campaign_id"]:
-            conn.executemany(
-                "insert into campaign_contacts (campaign_id, contact_id) values (%s,%s) on conflict do nothing",
-                [(job["campaign_id"], contact_id) for contact_id in selected_ids],
-            )
+            with conn.cursor() as cursor:
+                cursor.executemany(
+                    "insert into campaign_contacts (campaign_id, contact_id) values (%s,%s) on conflict do nothing",
+                    [(job["campaign_id"], contact_id) for contact_id in selected_ids],
+                )
     imported = len(accepted_to_write) if policy != "SKIP_EXISTING" else len(accepted_to_write)
     if policy == "ADD_TO_CAMPAIGN" and job["campaign_id"]:
         imported = len(accepted)
