@@ -259,6 +259,11 @@ async def _process_import(bot, settings: Settings) -> bool:
                     except Exception as exc:
                         logger.info("Import object cleanup failed (%s)", type(exc).__name__)
             elif batch_count:
+                with connection() as conn:
+                    conn.execute(
+                        "update import_jobs set status='QUEUED',updated_at=now() where id=%s and status='PROCESSING'",
+                        (job["id"],),
+                    )
                 await bot.send_message(
                     job["chat_id"],
                     f"Import progress: {latest['imported_rows']:,} contacts processed so far. It will continue automatically.",
