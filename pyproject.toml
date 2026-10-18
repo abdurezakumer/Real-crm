@@ -1,0 +1,32 @@
+[project]
+name = "real-estate-calling-crm"
+version = "0.1.0"
+description = "Multi-user real estate sales CRM Telegram bot"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "python-telegram-bot>=22.0,<23",
+  "psycopg[binary,pool]>=3.2,<4",
+  "pydantic-settings>=2.7,<3",
+  "openpyxl>=3.1,<4",
+  "phonenumbers>=8.13,<10",
+  "httpx>=0.28,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.3,<9", "pytest-asyncio>=0.25,<1", "httpx>=0.28,<1", "ruff>=0.9,<1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.setuptools.packages.find]
+include = ["realestate_crm*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+ignore = ["E501"]
+
