@@ -154,3 +154,147 @@ def build_database_backup(path: Path) -> dict[str, Any]:
         "row_count": total_rows,
         "file_size_bytes": path.stat().st_size,
     }
+
+
+def _write_customer_sheet(
+    workbook: Workbook,
+    used_sheets: set[str],
+    base_name: str,
+    columns: list[str],
+    cursor,
+) -> tuple[int, int, int]:
+    """Write rows to one or more sheets and retain any text too long for Excel cells."""
+    data_sheet_count = 1
+    data_sheet = workbook.create_sheet(_sheet_name(base_name, used_sheets))
+    data_sheet.append(columns)
+    data_rows_on_sheet = 0
+    row_count = 0
+    overflow_sheet_count = 0
+    overflow_sheet = None
+    overflow_rows_on_sheet = EXCEL_MAX_DATA_ROWS
+
+    while batch := cursor.fetchmany(FETCH_BATCH_SIZE):
+        for row in batch:
+            if data_rows_on_sheet >= EXCEL_MAX_DATA_ROWS:
+                data_sheet_count += 1
+                data_sheet = workbook.create_sheet(
+                    _sheet_name(base_name, used_sheets, f"_{data_sheet_count}")
+                )
+                data_sheet.append(columns)
+                data_rows_on_sheet = 0
+
+            row_count += 1
+            output_row = []
+            overflow_values: list[tuple[str, str]] = []
+            for column_name, value in zip(columns, row, strict=True):
+                cell = _cell_value(value)
+                if isinstance(cell, str) and len(cell) > EXCEL_MAX_CELL_CHARS:
+                    overflow_values.append((column_name, cell[EXCEL_MAX_CELL_CHARS:]))
+                    cell = cell[:EXCEL_MAX_CELL_CHARS]
+                output_row.append(cell)
+            data_sheet.append(output_row)
+            data_rows_on_sheet += 1
+
+            for column_name, remainder in overflow_values:
+                for part_number, offset in enumerate(
+                    range(0, len(remainder), EXCEL_MAX_CELL_CHARS), start=2
+                ):
+                    if overflow_sheet is None or overflow_rows_on_sheet >= EXCEL_MAX_DATA_ROWS:
+                        overflow_sheet_count += 1
+                        overflow_sheet = workbook.create_sheet(
+                            _sheet_name(
+                                f"{base_name}_long_text",
+                                used_sheets,
+                                f"_{overflow_sheet_count}",
+                            )
+                        )
+                        overflow_sheet.append(["Source row", "Column", "Part", "Text"])
+                        overflow_rows_on_sheet = 0
+                    overflow_sheet.append(
+                        [
+                            row_count,
+                            column_name,
+                            part_number,
+                            remainder[offset : offset + EXCEL_MAX_CELL_CHARS],
+                        ]
+                    )
+                    overflow_rows_on_sheet += 1
+
+    return row_count, data_sheet_count, overflow_sheet_count
+
+
+def build_customer_profiles_backup(path: Path) -> dict[str, Any]:
+    """Write customers and every directly linked customer record to a separate XLSX."""
+    workbook = Workbook(write_only=True)
+    used_sheets = {"backup manifest"}
+    manifest = workbook.create_sheet("Backup Manifest")
+    manifest.append(["Created (UTC)", datetime.now(UTC).isoformat()])
+    manifest.append(
+        ["Scope", "Full customer profiles and rows with a direct foreign key to contacts.id"]
+    )
+    manifest.append([])
+    manifest.append(["Data", "Foreign key", "Rows", "Data sheets", "Overflow sheets"])
+
+    contact_count = 0
+    related_row_count = 0
+    relation_count = 0
+    with connection() as conn:
+        conn.execute("set transaction isolation level repeatable read read only")
+        with conn.cursor(name="crm_customer_profiles", row_factory=tuple_row) as cursor:
+            cursor.execute("select * from public.contacts order by id")
+            columns = [column.name for column in cursor.description]
+            contact_count, data_sheets, overflow_sheets = _write_customer_sheet(
+                workbook, used_sheets, "Customer Profiles", columns, cursor
+            )
+        manifest.append(["contacts", "", contact_count, data_sheets, overflow_sheets])
+
+        relations = conn.execute(
+            """select tc.table_name, kcu.column_name
+               from information_schema.table_constraints tc
+               join information_schema.key_column_usage kcu
+                 on tc.constraint_name=kcu.constraint_name
+                and tc.constraint_schema=kcu.constraint_schema
+               join information_schema.constraint_column_usage ccu
+                 on ccu.constraint_name=tc.constraint_name
+                and ccu.constraint_schema=tc.constraint_schema
+               where tc.constraint_type='FOREIGN KEY' and tc.table_schema='public'
+                 and ccu.table_schema='public' and ccu.table_name='contacts'
+                 and ccu.column_name='id'
+               order by tc.table_name, kcu.column_name"""
+        ).fetchall()
+
+        for relation_number, relation in enumerate(relations, start=1):
+            table_name = relation["table_name"]
+            contact_column = relation["column_name"]
+            with conn.cursor(
+                name=f"crm_customer_related_{relation_number}", row_factory=tuple_row
+            ) as cursor:
+                cursor.execute(
+                    sql.SQL(
+                        "select c.name, c.phone_number, record.* "
+                        "from public.{} as record "
+                        "join public.contacts as c on record.{}=c.id "
+                        "order by record.{}"
+                    ).format(
+                        sql.Identifier(table_name),
+                        sql.Identifier(contact_column),
+                        sql.Identifier(contact_column),
+                    )
+                )
+                record_columns = [column.name for column in cursor.description][2:]
+                sheet_columns = ["Customer name", "Customer phone", *record_columns]
+                display_name = f"{table_name}_{contact_column}"
+                row_count, sheet_count, overflow_count = _write_customer_sheet(
+                    workbook, used_sheets, display_name, sheet_columns, cursor
+                )
+            manifest.append([display_name, contact_column, row_count, sheet_count, overflow_count])
+            related_row_count += row_count
+            relation_count += 1
+
+    workbook.save(path)
+    return {
+        "contact_count": contact_count,
+        "related_row_count": related_row_count,
+        "relation_count": relation_count,
+        "file_size_bytes": path.stat().st_size,
+    }

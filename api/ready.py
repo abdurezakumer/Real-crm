@@ -14,7 +14,14 @@ def readiness_status() -> tuple[int, dict[str, Any]]:
         get_settings()
         with connection() as conn:
             result = conn.execute(
-                """select bool_and(to_regclass('public.' || required_table) is not null) ready
+                """select
+                     bool_and(to_regclass('public.' || required_table) is not null)
+                     and (select count(*)=5 from information_schema.columns
+                          where table_schema='public' and table_name='crm_backup_state'
+                            and column_name in ('last_customer_storage_path',
+                              'last_customer_file_size_bytes','last_customer_count',
+                              'last_customer_related_row_count','last_customer_relation_count'))
+                     ready
                    from unnest(array['processed_telegram_updates','telegram_outbox','crm_users',
                      'contacts','follow_ups','campaigns','sales_opportunities',
                      'crm_backup_state']) required_table"""
