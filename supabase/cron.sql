@@ -21,7 +21,8 @@ select cron.schedule(
                 (select decrypted_secret from vault.decrypted_secrets where name = 'crm_worker_secret'),
             'Content-Type', 'application/json'
         ),
-        body := '{}'::jsonb
+        body := '{}'::jsonb,
+        timeout_milliseconds := 60000
     );
     $$
 );

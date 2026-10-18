@@ -10,6 +10,18 @@ BUCKET = "crm-imports"
 BACKUP_BUCKET = "crm-backups"
 
 
+def _bucket_already_exists(response: httpx.Response) -> bool:
+    if response.status_code == 409:
+        return True
+    if response.status_code != 400:
+        return False
+    try:
+        payload = response.json()
+    except ValueError:
+        return False
+    return isinstance(payload, dict) and payload.get("error") == "Duplicate"
+
+
 def _headers(settings: Settings) -> dict[str, str]:
     key = settings.supabase_service_role_key.get_secret_value()
     return {"apikey": key, "authorization": f"Bearer {key}"}
@@ -30,7 +42,9 @@ async def upload_import(settings: Settings, job_id: str, path: Path) -> str:
                 "file_size_limit": settings.max_import_file_mb * 1024 * 1024,
             },
         )
-        if bucket_response.status_code not in (200, 201, 409):
+        if bucket_response.status_code not in (200, 201) and not _bucket_already_exists(
+            bucket_response
+        ):
             bucket_response.raise_for_status()
         with path.open("rb") as file_handle:
 
@@ -79,7 +93,9 @@ async def upload_backup(settings: Settings, backup_name: str, path: Path) -> str
             headers={**headers, "content-type": "application/json"},
             json={"id": BACKUP_BUCKET, "name": BACKUP_BUCKET, "public": False},
         )
-        if bucket_response.status_code not in (200, 201, 409):
+        if bucket_response.status_code not in (200, 201) and not _bucket_already_exists(
+            bucket_response
+        ):
             bucket_response.raise_for_status()
 
         storage_path = f"daily/{backup_name}"
