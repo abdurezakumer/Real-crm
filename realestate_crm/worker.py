@@ -507,7 +507,7 @@ async def _process_export(bot, settings: Settings) -> bool:
     return True
 
 
-def _claim_daily_backup() -> dict[str, Any] | None:
+def _claim_daily_backup(app_timezone: str) -> dict[str, Any] | None:
     with connection() as conn:
         return conn.execute(
             """update crm_backup_state set lease_until=now()+interval '10 minutes',
@@ -515,17 +515,21 @@ def _claim_daily_backup() -> dict[str, Any] | None:
                where id=true and (lease_until is null or lease_until<=now())
                  and (customer_backup_pending
                    or (notification_pending and (retry_after is null or retry_after<=now()))
-                   or (not notification_pending and
-                       (last_success_at is null or last_success_at<=now()-interval '24 hours')))
-               returning *"""
+                   or (not notification_pending
+                       and last_run_local_date < timezone(%s, now())::date))
+               returning *""",
+            (app_timezone,),
         ).fetchone()
 
 
-def _mark_daily_customer_backup_pending(storage_path: str, summary: dict[str, Any]) -> None:
+def _mark_daily_customer_backup_pending(
+    storage_path: str, summary: dict[str, Any], app_timezone: str
+) -> None:
     with connection() as conn:
         conn.execute(
             """update crm_backup_state set last_storage_path=%s,last_file_size_bytes=%s,
                  last_table_count=%s,last_row_count=%s,customer_backup_pending=true,
+                 last_run_local_date=timezone(%s,now())::date,
                  notification_pending=false,retry_after=null,lease_until=null,
                  last_error=null,updated_at=now() where id=true""",
             (
@@ -533,6 +537,7 @@ def _mark_daily_customer_backup_pending(storage_path: str, summary: dict[str, An
                 summary["file_size_bytes"],
                 summary["table_count"],
                 summary["row_count"],
+                app_timezone,
             ),
         )
 
@@ -610,7 +615,7 @@ async def _send_daily_backup_links(
 
 async def _process_daily_backup(bot, settings: Settings) -> bool:
     try:
-        job = _claim_daily_backup()
+        job = _claim_daily_backup(settings.app_timezone)
     except Exception as exc:
         logger.error("Daily Excel backup claim failed (%s)", type(exc).__name__)
         return False
@@ -664,7 +669,7 @@ async def _process_daily_backup(bot, settings: Settings) -> bool:
             path = Path(directory) / filename
             summary = await asyncio.to_thread(build_database_backup, path)
             storage_path = await upload_backup(settings, filename, path)
-            _mark_daily_customer_backup_pending(storage_path, summary)
+            _mark_daily_customer_backup_pending(storage_path, summary, settings.app_timezone)
             logger.info(
                 "Daily full CRM backup saved (%s tables, %s rows, %s bytes); "
                 "customer workbook queued for the next worker run",
