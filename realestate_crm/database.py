@@ -16,5 +16,6 @@ def connection() -> Iterator[psycopg.Connection]:
         row_factory=dict_row,
         connect_timeout=8,
         application_name="real-estate-telegram-crm",
+        prepare_threshold=None,
     ) as conn:
         yield conn
