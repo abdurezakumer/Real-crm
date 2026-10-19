@@ -12,8 +12,6 @@ from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
-import httpx
-from openpyxl import Workbook
 from telegram import Bot, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
@@ -24,9 +22,6 @@ from realestate_crm.handlers import dispatch_update
 from realestate_crm.services import crm
 from realestate_crm.services import outbox as telegram_outbox
 from realestate_crm.services import team as team_service
-from realestate_crm.services.importing import preview_file
-from realestate_crm.services.storage import download_import, upload_import
-from realestate_crm.worker import run_worker
 
 logger = logging.getLogger(__name__)
 MAX_WEBHOOK_BYTES = 1024 * 1024
@@ -122,6 +117,8 @@ def _build_export(action: dict[str, Any], settings: Settings) -> tuple[Path, int
                         count += len(rows)
                         after_id = UUID(rows[-1]["id"])
             else:
+                from openpyxl import Workbook
+
                 workbook = Workbook(write_only=True)
                 sheet = workbook.create_sheet("Contacts")
                 sheet.append(headers)
@@ -173,6 +170,8 @@ def _export_row(row: dict[str, Any], timezone: str) -> list[Any]:
 
 
 async def _finish_preview(bot: Bot, action: dict[str, Any], settings: Settings) -> None:
+    from realestate_crm.services.importing import preview_file
+    from realestate_crm.services.storage import download_import
     from realestate_crm.telegram_ui import render_preview
 
     suffix = Path(action["filename"]).suffix.lower()
@@ -203,6 +202,7 @@ async def _finish_preview(bot: Bot, action: dict[str, Any], settings: Settings) 
 
 async def _stage_text_import(bot: Bot, action: dict[str, Any], settings: Settings) -> None:
     from realestate_crm.phone import normalize_phone
+    from realestate_crm.services.storage import upload_import
     from realestate_crm.telegram_ui import render_preview
 
     records = action["records"]
@@ -305,6 +305,8 @@ async def _deliver_outbox_action(bot: Bot, action: dict[str, Any], settings: Set
     elif kind == "stage_text_import":
         await _stage_text_import(bot, action, settings)
     elif kind == "dialer":
+        import httpx
+
         token = settings.telegram_bot_token.get_secret_value()
         message_html = (
             f"<p><b>{html.escape(action['name'])}</b></p>"
@@ -481,6 +483,8 @@ async def process_worker(secret_header: str | None) -> tuple[int, dict[str, Any]
     if not hmac.compare_digest(provided, expected):
         return 403, {"ok": False, "error": "unauthorized"}
     try:
+        from realestate_crm.worker import run_worker
+
         async with Bot(settings.telegram_bot_token.get_secret_value()) as bot:
             result = await run_worker(bot, settings)
         result["telegram_actions_sent"] = await _drain_telegram_outbox(settings, limit=2)
