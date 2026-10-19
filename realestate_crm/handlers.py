@@ -23,9 +23,12 @@ from realestate_crm.services import crm, intelligence
 from realestate_crm.services import team as team_service
 from realestate_crm.services.text_import import parse_pasted_leads
 from realestate_crm.telegram_ui import (
+    OUTCOME_CODE_CATEGORIES,
+    OUTCOMES,
     button,
     campaign_keyboard,
     dashboard_text,
+    expand_callback_data,
     export_date_format_keyboard,
     export_format_keyboard,
     export_keyboard,
@@ -44,6 +47,42 @@ from realestate_crm.telegram_ui import (
 from realestate_crm.timeutils import local_label
 
 logger = logging.getLogger(__name__)
+
+_CALL_CONFIRMATION_CODES = {
+    "d": ("DISQUALIFICATION", "DO_NOT_CONTACT"),
+    "n": ("CONNECTION", "NO_ANSWER"),
+    "b": ("CONNECTION", "BUSY"),
+    "s": ("CONNECTION", "PHONE_SWITCHED_OFF"),
+    "u": ("CONNECTION", "UNREACHABLE"),
+    "f": ("CONNECTION", "CALL_FAILED"),
+}
+_CALL_CONFIRMATION_CODES_REVERSED = {
+    result: code for code, result in _CALL_CONFIRMATION_CODES.items()
+}
+
+
+def _call_confirmation_callback(contact_id: UUID, category: str, outcome: str) -> str:
+    try:
+        code = _CALL_CONFIRMATION_CODES_REVERSED[(category, outcome)]
+    except KeyError as exc:
+        raise ValueError("Unsupported call confirmation") from exc
+    return f"cc:{contact_id}:{code}"
+
+
+def _decode_outcome_callback(category: str, value: str) -> tuple[str, str]:
+    """Decode compact outcome buttons while accepting already-issued legacy buttons."""
+    if category in OUTCOMES:
+        if value in {code for _label, code in OUTCOMES[category]}:
+            return category, value
+        raise ValueError("Unknown call outcome")
+
+    decoded_category = OUTCOME_CODE_CATEGORIES.get(category)
+    if decoded_category is None:
+        raise ValueError("Unknown call outcome")
+    try:
+        return decoded_category, OUTCOMES[decoded_category][int(value)][1]
+    except (ValueError, IndexError):
+        raise ValueError("Unknown call outcome") from None
 
 
 def _action_send(
@@ -1089,7 +1128,7 @@ def _handle_callback(
     query = update.callback_query
     if not query:
         return actions
-    data = query.data or ""
+    data = expand_callback_data(query.data or "")
     actions.append(_action_answer(query.id))
     try:
         team_service.authorize_callback(conn, user_id, data)
@@ -1269,7 +1308,8 @@ def _handle_callback(
                 outcomes_keyboard(parts[1], category),
             )
         elif prefix == "o" and len(parts) == 4:
-            contact_id, category, outcome = UUID(parts[1]), parts[2], parts[3]
+            contact_id = UUID(parts[1])
+            category, outcome = _decode_outcome_callback(parts[2], parts[3])
             if outcome == "ANSWERED" and category == "CONNECTION":
                 _set_input(
                     conn, user_id, "ANSWERED_OUTCOME", contact_id, {"connection_result": "ANSWERED"}
@@ -1302,7 +1342,7 @@ def _handle_callback(
                             [
                                 button(
                                     "Confirm exclusion",
-                                    f"confirmcall:{contact_id}:{category}:{outcome}",
+                                    _call_confirmation_callback(contact_id, category, outcome),
                                 )
                             ],
                             [button("Cancel", f"lead:{contact_id}")],
@@ -1325,7 +1365,7 @@ def _handle_callback(
                             [
                                 button(
                                     "Confirm attempt",
-                                    f"confirmcall:{contact_id}:{category}:{outcome}",
+                                    _call_confirmation_callback(contact_id, category, outcome),
                                 )
                             ],
                             [button("Cancel", f"lead:{contact_id}")],
@@ -1380,6 +1420,24 @@ def _handle_callback(
                     settings=settings,
                     actions=actions,
                 )
+        elif prefix == "cc" and len(parts) == 3:
+            contact_id = UUID(parts[1])
+            try:
+                category, outcome = _CALL_CONFIRMATION_CODES[parts[2]]
+            except KeyError:
+                raise ValueError("Unknown call confirmation") from None
+            _save_result_and_continue(
+                conn,
+                update,
+                contact_id=contact_id,
+                category=category,
+                outcome=outcome,
+                user_id=user_id,
+                update_id=update_id,
+                settings=settings,
+                actions=actions,
+                ask_followup=outcome != "DO_NOT_CONTACT",
+            )
         elif prefix == "confirmcall" and len(parts) == 4:
             contact_id, category, outcome = UUID(parts[1]), parts[2], parts[3]
             if outcome == "DO_NOT_CONTACT":

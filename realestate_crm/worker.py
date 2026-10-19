@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import UUID
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardMarkup
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
@@ -346,15 +346,9 @@ async def _send_due_reminders(bot, limit: int = 20) -> int:
                 reply_markup=InlineKeyboardMarkup(
                     [
                         [
-                            InlineKeyboardButton(
-                                "Open contact", callback_data=f"lead:{row['contact_id']}"
-                            )
+                            button("Open contact", f"lead:{row['contact_id']}")
                         ],
-                        [
-                            InlineKeyboardButton(
-                                "Mark complete", callback_data=f"fdone:{row['follow_up_id']}"
-                            )
-                        ],
+                        [button("Mark complete", f"fdone:{row['follow_up_id']}")],
                     ]
                 ),
             )

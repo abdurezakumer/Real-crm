@@ -1,15 +1,60 @@
+import re
+from base64 import urlsafe_b64decode, urlsafe_b64encode
 from html import escape
 from typing import Any
+from uuid import UUID
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from realestate_crm.timeutils import local_label
 
+_CALLBACK_UUID = re.compile(
+    r"(?i)(?<![0-9a-f])([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![0-9a-f])"
+)
+_PACKED_CALLBACK_UUID = re.compile(r"(?<=:)~([A-Za-z0-9_-]{22})(?=:|$)")
+TELEGRAM_CALLBACK_DATA_MAX_BYTES = 64
+
+
+def compact_callback_data(data: str) -> str:
+    """Shorten UUID fields only when needed to fit Telegram's callback limit."""
+    if not isinstance(data, str) or not data:
+        raise ValueError("Telegram callback data must be a non-empty string")
+    if len(data.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES:
+        return data
+
+    def pack(match: re.Match[str]) -> str:
+        raw = UUID(match.group(1)).bytes
+        token = urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+        return f"~{token}"
+
+    compacted = _CALLBACK_UUID.sub(pack, data)
+    if len(compacted.encode("utf-8")) > TELEGRAM_CALLBACK_DATA_MAX_BYTES:
+        raise ValueError("Telegram callback data exceeds the 64-byte limit")
+    return compacted
+
+
+def expand_callback_data(data: str) -> str:
+    """Restore UUID fields packed by compact_callback_data before routing."""
+    if not isinstance(data, str) or "~" not in data:
+        return data
+
+    def unpack(match: re.Match[str]) -> str:
+        token = match.group(1)
+        try:
+            raw = urlsafe_b64decode(token + "=" * ((-len(token)) % 4))
+            return str(UUID(bytes=raw)) if len(raw) == 16 else match.group(0)
+        except (ValueError, TypeError):
+            return match.group(0)
+
+    return _PACKED_CALLBACK_UUID.sub(unpack, data)
+
 
 def button(text: str, data: str | None = None, url: str | None = None) -> InlineKeyboardButton:
     if url:
         return InlineKeyboardButton(text, url=url)
-    return InlineKeyboardButton(text, callback_data=data)
+    return InlineKeyboardButton(
+        text, callback_data=compact_callback_data(data) if data is not None else None
+    )
 
 
 def main_menu() -> InlineKeyboardMarkup:
@@ -218,10 +263,23 @@ OUTCOMES: dict[str, list[tuple[str, str]]] = {
     ],
 }
 
+OUTCOME_CATEGORY_CODES = {
+    "CONNECTION": "c",
+    "SALES_INTEREST": "s",
+    "PROPERTY_REQUIREMENTS": "p",
+    "FOLLOW_UP": "f",
+    "DISQUALIFICATION": "d",
+}
+OUTCOME_CODE_CATEGORIES = {code: category for category, code in OUTCOME_CATEGORY_CODES.items()}
+
 
 def outcomes_keyboard(contact_id: str, category: str) -> InlineKeyboardMarkup:
     choices = OUTCOMES.get(category, [])
-    rows = [[button(label, f"o:{contact_id}:{category}:{code}")] for label, code in choices]
+    category_code = OUTCOME_CATEGORY_CODES.get(category, "?")
+    rows = [
+        [button(label, f"o:{contact_id}:{category_code}:{index}")]
+        for index, (label, _code) in enumerate(choices)
+    ]
     rows.append([button("‹ Categories", f"r:{contact_id}")])
     return InlineKeyboardMarkup(rows)
 

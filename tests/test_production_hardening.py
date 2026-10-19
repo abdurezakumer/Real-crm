@@ -10,7 +10,20 @@ from telegram.error import TelegramError
 from api import ready
 from realestate_crm import runtime
 from realestate_crm.config import Settings
+from realestate_crm.handlers import (
+    _CALL_CONFIRMATION_CODES,
+    _call_confirmation_callback,
+    _decode_outcome_callback,
+)
 from realestate_crm.services import outbox
+from realestate_crm.telegram_ui import (
+    OUTCOMES,
+    TELEGRAM_CALLBACK_DATA_MAX_BYTES,
+    button,
+    compact_callback_data,
+    expand_callback_data,
+    outcomes_keyboard,
+)
 
 
 def valid_settings(**overrides):
@@ -118,6 +131,85 @@ def test_outbox_failure_uses_bounded_retry_and_terminal_status():
     outbox.mark_failed(conn, row, TelegramError("private response"))
     assert conn.params[0] == "FAILED"
     assert conn.params[1] <= 900
+
+
+def test_callback_data_compacts_uuid_fields_and_enforces_telegram_limit():
+    record_id = uuid4()
+    original = f"p4:manage:{record_id}:{record_id}"
+
+    compacted = compact_callback_data(original)
+    assert len(compacted.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES
+    assert "~" in compacted
+    assert expand_callback_data(compacted) == original
+    assert button("Open", original).callback_data == compacted
+
+    with pytest.raises(ValueError, match="64-byte limit"):
+        button("Invalid", "x" * (TELEGRAM_CALLBACK_DATA_MAX_BYTES + 1))
+
+
+def test_every_call_outcome_button_fits_telegram_and_uses_valid_category_code():
+    contact_id = uuid4()
+    category_codes = {
+        "CONNECTION": "c",
+        "SALES_INTEREST": "s",
+        "PROPERTY_REQUIREMENTS": "p",
+        "FOLLOW_UP": "f",
+        "DISQUALIFICATION": "d",
+    }
+
+    for category, choices in OUTCOMES.items():
+        markup = outcomes_keyboard(str(contact_id), category)
+        actual = markup.inline_keyboard[:-1]
+        assert len(actual) == len(choices)
+        for index, row in enumerate(actual):
+            callback_data = row[0].callback_data
+            assert callback_data == f"o:{contact_id}:{category_codes[category]}:{index}"
+            assert len(callback_data.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES
+            outcome = choices[index][1]
+            assert _decode_outcome_callback(category_codes[category], str(index)) == (
+                category,
+                outcome,
+            )
+            assert _decode_outcome_callback(category, outcome) == (category, outcome)
+
+
+def test_long_call_confirmation_callbacks_are_compact_and_decode_to_each_result():
+    contact_id = uuid4()
+    for code, (category, outcome) in _CALL_CONFIRMATION_CODES.items():
+        callback_data = _call_confirmation_callback(contact_id, category, outcome)
+        assert callback_data == f"cc:{contact_id}:{code}"
+        assert len(callback_data.encode("utf-8")) <= TELEGRAM_CALLBACK_DATA_MAX_BYTES
+
+
+@pytest.mark.asyncio
+async def test_duplicate_callback_acknowledgements_are_sent_once(monkeypatch):
+    acknowledged = []
+
+    class FakeBot:
+        def __init__(self, token):
+            self.token = token
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def answer_callback_query(self, **kwargs):
+            acknowledged.append(kwargs["callback_query_id"])
+
+    monkeypatch.setattr(runtime, "Bot", FakeBot)
+    settings = SimpleNamespace(telegram_bot_token=SecretStr("token"))
+    actions = [
+        {"type": "answer", "callback_id": "same"},
+        {"type": "send", "chat_id": 77, "text": "Updated"},
+        {"type": "answer", "callback_id": "same"},
+        {"type": "answer", "callback_id": "other"},
+    ]
+
+    await runtime._send_callback_answers(actions, settings)
+
+    assert acknowledged == ["same", "other"]
 
 
 @pytest.mark.asyncio

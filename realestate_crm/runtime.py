@@ -265,7 +265,13 @@ async def _stage_text_import(bot: Bot, action: dict[str, Any], settings: Setting
 
 
 async def _send_callback_answers(actions: list[dict[str, Any]], settings: Settings) -> None:
-    answers = [action for action in actions if action.get("type") == "answer"]
+    answers = []
+    seen_callback_ids = set()
+    for action in actions:
+        callback_id = action.get("callback_id") if action.get("type") == "answer" else None
+        if callback_id is not None and callback_id not in seen_callback_ids:
+            seen_callback_ids.add(callback_id)
+            answers.append(action)
     if not answers:
         return
     try:
