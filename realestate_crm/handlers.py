@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 from telegram import InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
@@ -1554,8 +1555,8 @@ def _handle_callback(
                 (
                     user_id,
                     contact_id,
-                    {"eligibility": old["contact_eligibility"] if old else None},
-                    {"eligibility": "ELIGIBLE"},
+                    Jsonb({"eligibility": old["contact_eligibility"] if old else None}),
+                    Jsonb({"eligibility": "ELIGIBLE"}),
                     update_id,
                 ),
             )
@@ -1587,8 +1588,8 @@ def _handle_callback(
                     (
                         user_id,
                         contact_id,
-                        {"eligibility": "ELIGIBLE"},
-                        {"eligibility": "TEMPORARILY_PAUSED"},
+                        Jsonb({"eligibility": "ELIGIBLE"}),
+                        Jsonb({"eligibility": "TEMPORARILY_PAUSED"}),
                         update_id,
                     ),
                 )
@@ -1620,8 +1621,8 @@ def _handle_callback(
                     (
                         user_id,
                         contact_id,
-                        {"lead_status": "NOT_INTERESTED"},
-                        {"lead_status": "FOLLOW_UP_REQUIRED"},
+                        Jsonb({"lead_status": "NOT_INTERESTED"}),
+                        Jsonb({"lead_status": "FOLLOW_UP_REQUIRED"}),
                         update_id,
                     ),
                 )

@@ -6,6 +6,7 @@ from uuid import UUID
 from zoneinfo import ZoneInfo
 
 from psycopg import Connection
+from psycopg.types.json import Jsonb
 
 from realestate_crm.config import Settings
 from realestate_crm.enums import Eligibility
@@ -706,8 +707,19 @@ def save_call_result(
         (
             user_id,
             contact_id,
-            {"lead_status": current["lead_status"], "eligibility": current["contact_eligibility"]},
-            {"lead_status": lead_status, "eligibility": eligibility, "outcome": outcome},
+            Jsonb(
+                {
+                    "lead_status": current["lead_status"],
+                    "eligibility": current["contact_eligibility"],
+                }
+            ),
+            Jsonb(
+                {
+                    "lead_status": lead_status,
+                    "eligibility": eligibility,
+                    "outcome": outcome,
+                }
+            ),
             update_id,
         ),
     )
@@ -733,8 +745,8 @@ def set_do_not_contact(conn: Connection, contact_id: UUID, user_id: int, update_
         (
             user_id,
             contact_id,
-            current,
-            {"contact_eligibility": Eligibility.DO_NOT_CONTACT.value},
+            Jsonb(current),
+            Jsonb({"contact_eligibility": Eligibility.DO_NOT_CONTACT.value}),
             update_id,
         ),
     )
