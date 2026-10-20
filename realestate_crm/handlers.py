@@ -1319,6 +1319,21 @@ def _handle_callback(
                 labels.get(category, "Select an outcome."),
                 outcomes_keyboard(parts[1], category),
             )
+        elif prefix == "oanswer" and len(parts) == 2:
+            contact_id = UUID(parts[1])
+            _save_result_and_continue(
+                conn,
+                update,
+                contact_id=contact_id,
+                category="CONNECTION",
+                outcome="ANSWERED",
+                user_id=user_id,
+                update_id=update_id,
+                settings=settings,
+                actions=actions,
+                connection_result="ANSWERED",
+                ask_followup=False,
+            )
         elif prefix == "o" and len(parts) == 4:
             contact_id = UUID(parts[1])
             category, outcome = _decode_outcome_callback(parts[2], parts[3])
@@ -1329,8 +1344,10 @@ def _handle_callback(
                 _edit_or_send(
                     actions,
                     update,
-                    "Answered. Choose the sales result or next action to save this call.",
-                    outcomes_keyboard(str(contact_id), "SALES_INTEREST"),
+                    "Answered. Choose a sales result, or save this as answered only.",
+                    outcomes_keyboard(
+                        str(contact_id), "SALES_INTEREST", include_answered_only=True
+                    ),
                 )
             elif outcome == "CONVERTED_TO_CUSTOMER":
                 _edit_or_send(
@@ -1368,22 +1385,17 @@ def _handle_callback(
                 "UNREACHABLE",
                 "CALL_FAILED",
             }:
-                _edit_or_send(
-                    actions,
+                _save_result_and_continue(
+                    conn,
                     update,
-                    f"Confirm that you attempted this call and record *{outcome.replace('_', ' ').title()}*?",
-                    InlineKeyboardMarkup(
-                        [
-                            [
-                                button(
-                                    "Confirm attempt",
-                                    _call_confirmation_callback(contact_id, category, outcome),
-                                )
-                            ],
-                            [button("Cancel", f"lead:{contact_id}")],
-                        ]
-                    ),
-                    ParseMode.MARKDOWN,
+                    contact_id=contact_id,
+                    category=category,
+                    outcome=outcome,
+                    user_id=user_id,
+                    update_id=update_id,
+                    settings=settings,
+                    actions=actions,
+                    ask_followup=True,
                 )
             elif outcome in {"MEETING_SCHEDULED", "REQUESTED_PROPERTY_VISIT"}:
                 pending = _get_input(conn, user_id)

@@ -273,13 +273,17 @@ OUTCOME_CATEGORY_CODES = {
 OUTCOME_CODE_CATEGORIES = {code: category for category, code in OUTCOME_CATEGORY_CODES.items()}
 
 
-def outcomes_keyboard(contact_id: str, category: str) -> InlineKeyboardMarkup:
+def outcomes_keyboard(
+    contact_id: str, category: str, *, include_answered_only: bool = False
+) -> InlineKeyboardMarkup:
     choices = OUTCOMES.get(category, [])
     category_code = OUTCOME_CATEGORY_CODES.get(category, "?")
     rows = [
         [button(label, f"o:{contact_id}:{category_code}:{index}")]
         for index, (label, _code) in enumerate(choices)
     ]
+    if include_answered_only:
+        rows.append([button("Save Answered Only", f"oanswer:{contact_id}")])
     rows.append([button("‹ Categories", f"r:{contact_id}")])
     return InlineKeyboardMarkup(rows)
 
