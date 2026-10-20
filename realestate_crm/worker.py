@@ -345,9 +345,7 @@ async def _send_due_reminders(bot, limit: int = 20) -> int:
                 text,
                 reply_markup=InlineKeyboardMarkup(
                     [
-                        [
-                            button("Open contact", f"lead:{row['contact_id']}")
-                        ],
+                        [button("Open contact", f"lead:{row['contact_id']}")],
                         [button("Mark complete", f"fdone:{row['follow_up_id']}")],
                     ]
                 ),
