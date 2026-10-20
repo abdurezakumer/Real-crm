@@ -1,5 +1,5 @@
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from threading import Barrier, Lock
 from types import SimpleNamespace
 from uuid import uuid4
@@ -280,7 +280,7 @@ def test_rescheduling_preserves_old_followup_and_links_it_to_new_one():
 @pytest.mark.parametrize(
     ("next_at", "expected_state"),
     [
-        (datetime(2026, 10, 20, 9, tzinfo=UTC), "PENDING"),
+        (datetime.now(UTC) + timedelta(days=1), "PENDING"),
         (None, "NONE"),
     ],
 )

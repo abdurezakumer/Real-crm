@@ -2007,5 +2007,17 @@ def dispatch_update(
         return []
     user_id = user.id
     if update.callback_query:
-        return _handle_callback(conn, update, user_id, settings, update_id, [])
+        try:
+            # A failing callback must roll back only its own work so the enclosing
+            # webhook transaction can still acknowledge the button press.
+            with conn.transaction():
+                return _handle_callback(conn, update, user_id, settings, update_id, [])
+        except Exception as exc:
+            logger.error("Inline callback update %s failed (%s)", update_id, type(exc).__name__)
+            return [
+                _action_answer(
+                    update.callback_query.id,
+                    "That action could not be completed. Please try again or reopen the menu.",
+                )
+            ]
     return _handle_message(conn, update, user_id, settings, update_id, [])

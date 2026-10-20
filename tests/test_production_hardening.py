@@ -5,10 +5,10 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr, ValidationError
 from telegram import InlineKeyboardMarkup
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
 from api import ready
-from realestate_crm import runtime
+from realestate_crm import handlers, runtime
 from realestate_crm.config import Settings
 from realestate_crm.handlers import (
     _CALL_CONFIRMATION_CODES,
@@ -131,6 +131,65 @@ def test_outbox_failure_uses_bounded_retry_and_terminal_status():
     outbox.mark_failed(conn, row, TelegramError("private response"))
     assert conn.params[0] == "FAILED"
     assert conn.params[1] <= 900
+
+
+def test_inline_callback_failure_rolls_back_and_returns_a_callback_notice(monkeypatch):
+    callback = SimpleNamespace(id="callback-failure")
+    update = SimpleNamespace(effective_user=SimpleNamespace(id=77), callback_query=callback)
+
+    def fail_callback(*_args):
+        raise RuntimeError("database details must not be sent to the user")
+
+    monkeypatch.setattr(handlers, "_handle_callback", fail_callback)
+    actions = handlers.dispatch_update(
+        SimpleNamespace(transaction=nullcontext), update, valid_settings(), 9001
+    )
+
+    assert actions == [
+        {
+            "type": "answer",
+            "callback_id": "callback-failure",
+            "text": "That action could not be completed. Please try again or reopen the menu.",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_send"),
+    [
+        ("Message is not modified", False),
+        ("Message to edit not found", True),
+        ("Message can't be edited", True),
+    ],
+)
+async def test_edit_bad_requests_are_handled_without_poisoning_outbox(error, expected_send):
+    class FakeBot:
+        def __init__(self):
+            self.edits = 0
+            self.sends = []
+
+        async def edit_message_text(self, **_kwargs):
+            self.edits += 1
+            raise BadRequest(error)
+
+        async def send_message(self, **kwargs):
+            self.sends.append(kwargs)
+
+    bot = FakeBot()
+    action = {
+        "type": "edit",
+        "chat_id": 77,
+        "message_id": 123,
+        "text": "Updated screen",
+    }
+
+    await runtime._deliver_outbox_action(bot, action, SimpleNamespace())
+
+    assert bot.edits == 1
+    assert bool(bot.sends) is expected_send
+    if expected_send:
+        assert bot.sends[0]["text"] == "Updated screen"
 
 
 def test_callback_data_compacts_uuid_fields_and_enforces_telegram_limit():

@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from telegram import Bot, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 
 from realestate_crm.config import Settings, get_settings
 from realestate_crm.database import connection
@@ -299,13 +299,34 @@ async def _deliver_outbox_action(bot: Bot, action: dict[str, Any], settings: Set
             reply_markup=markup,
         )
     elif kind == "edit":
-        await bot.edit_message_text(
-            chat_id=action["chat_id"],
-            message_id=action["message_id"],
-            text=action["text"],
-            parse_mode=action.get("parse_mode"),
-            reply_markup=markup,
-        )
+        try:
+            await bot.edit_message_text(
+                chat_id=action["chat_id"],
+                message_id=action["message_id"],
+                text=action["text"],
+                parse_mode=action.get("parse_mode"),
+                reply_markup=markup,
+            )
+        except BadRequest as exc:
+            reason = str(exc).lower()
+            if "message is not modified" in reason:
+                return
+            if any(
+                marker in reason
+                for marker in (
+                    "message to edit not found",
+                    "message can't be edited",
+                    "there is no text in the message to edit",
+                )
+            ):
+                await bot.send_message(
+                    chat_id=action["chat_id"],
+                    text=action["text"],
+                    parse_mode=action.get("parse_mode"),
+                    reply_markup=markup,
+                )
+                return
+            raise
     elif kind == "finish_preview":
         await _finish_preview(bot, action, settings)
     elif kind == "stage_text_import":
