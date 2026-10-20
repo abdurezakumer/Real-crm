@@ -307,7 +307,7 @@ def _profile_summary(profile: dict[str, Any]) -> str:
     )
 
 
-def _profile_keyboard(contact_id: UUID) -> InlineKeyboardMarkup:
+def _profile_keyboard(contact_id: UUID, profile_complete: bool = False) -> InlineKeyboardMarkup:
     rows = [
         [
             button("Property type", f"p2:pe:{contact_id}:pt"),
@@ -328,7 +328,12 @@ def _profile_keyboard(contact_id: UUID) -> InlineKeyboardMarkup:
             button("New / resale", f"p2:pe:{contact_id}:cond"),
         ],
         [button("Additional requirements", f"p2:pe:{contact_id}:req")],
-        [button("Mark Profile Complete", f"p2:profile_complete:{contact_id}")],
+        [
+            button(
+                "Profile Complete" if profile_complete else "Mark Profile Complete",
+                f"p2:profile_complete:{contact_id}",
+            )
+        ],
         [button("Back to Contact", f"lead:{contact_id}")],
     ]
     return InlineKeyboardMarkup(rows)
@@ -337,11 +342,12 @@ def _profile_keyboard(contact_id: UUID) -> InlineKeyboardMarkup:
 def _show_profile(
     conn: Connection, update: Update, actions: list[dict[str, Any]], contact_id: UUID
 ) -> None:
+    profile = _property_profile(conn, contact_id)
     _edit(
         update,
         actions,
-        _profile_summary(_property_profile(conn, contact_id)),
-        _profile_keyboard(contact_id),
+        _profile_summary(profile),
+        _profile_keyboard(contact_id, bool(profile.get("profile_complete"))),
         "HTML",
     )
 
@@ -1602,8 +1608,17 @@ def handle_callback(
         elif prefix == "p2" and operation == "profile_complete" and len(parts) == 3:
             contact_id = UUID(parts[2])
             values = _profile_values(_property_profile(conn, contact_id))
-            values["profile_complete"] = True
-            _save_profile(conn, contact_id, values, settings, user_id)
+            if values.get("profile_complete"):
+                message_text = getattr(query.message, "text", None) or ""
+                if "Profile: Complete" in message_text:
+                    for action in actions:
+                        if action.get("type") == "answer" and action.get("callback_id") == query.id:
+                            action["text"] = "Buyer profile is already marked complete."
+                            break
+                    return True
+            else:
+                values["profile_complete"] = True
+                _save_profile(conn, contact_id, values, settings, user_id)
             _show_profile(conn, update, actions, contact_id)
         elif prefix == "p2" and operation == "pe" and len(parts) == 4:
             contact_id, code = UUID(parts[2]), parts[3]
