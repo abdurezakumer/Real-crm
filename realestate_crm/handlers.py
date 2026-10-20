@@ -368,17 +368,21 @@ def _save_result_and_continue(
     connection_result: str | None = None,
 ) -> None:
     pending = _get_input(conn, user_id)
-    if connection_result is None and pending and pending.get("contact_id") == contact_id:
-        connection_result = (pending.get("payload") or {}).get("connection_result")
-        if pending["purpose"] == "ANSWERED_OUTCOME":
-            _clear_input(conn, user_id)
+    if (
+        pending
+        and pending.get("contact_id") == contact_id
+        and pending["purpose"] == "ANSWERED_OUTCOME"
+    ):
+        # Preserve the answered connection result when the caller follows it with
+        # a sales, property, follow-up, or disqualification outcome. A different
+        # connection result (for example, No Answer) must replace it.
+        if category != "CONNECTION" and connection_result is None:
+            connection_result = (pending.get("payload") or {}).get("connection_result")
+        _clear_input(conn, user_id)
     session = crm.current_session(conn, user_id)
-    session_id = session["id"] if session else None
-    campaign_id = (
-        session["campaign_id"]
-        if session and session.get("current_contact_id") == contact_id
-        else None
-    )
+    session_has_contact = bool(session and session.get("current_contact_id") == contact_id)
+    session_id = session["id"] if session_has_contact else None
+    campaign_id = session["campaign_id"] if session_has_contact else None
     saved = crm.save_call_result(
         conn,
         contact_id=contact_id,
@@ -476,7 +480,7 @@ def _save_result_and_continue(
             followup_keyboard(str(contact_id)),
         )
         return
-    if session and session["status"] == "ACTIVE":
+    if session_has_contact and session["status"] == "ACTIVE":
         session = crm.current_session(conn, user_id)
         if session:
             _session_lead(conn, session, user_id, settings, actions, update, advance=True)
@@ -1251,7 +1255,15 @@ def _handle_callback(
             else:
                 _campaign_select(conn, update, user_id, parts[1], settings, actions)
         elif prefix == "lead" and len(parts) == 2:
-            _show_contact(conn, update, UUID(parts[1]), user_id, prefs, actions, settings=settings)
+            contact_id = UUID(parts[1])
+            pending = _get_input(conn, user_id)
+            if (
+                pending
+                and pending.get("contact_id") == contact_id
+                and pending["purpose"] == "ANSWERED_OUTCOME"
+            ):
+                _clear_input(conn, user_id)
+            _show_contact(conn, update, contact_id, user_id, prefs, actions, settings=settings)
         elif prefix == "call" and len(parts) == 2:
             contact = crm.get_contact(conn, UUID(parts[1]))
             if (
@@ -1955,6 +1967,13 @@ def _handle_callback(
                 update,
                 "Choose the export format.",
                 export_format_keyboard("eligible", parts[1]),
+            )
+        else:
+            _edit_or_send(
+                actions,
+                update,
+                "That button is outdated or unavailable. Open the contact again and choose its action.",
+                main_menu(),
             )
     except (ValueError, TypeError) as exc:
         logger.info("Rejected malformed callback (%s)", type(exc).__name__)
